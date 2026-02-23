@@ -1,0 +1,35 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: football_club_db
+    environment:
+      POSTGRES_DB: football_club
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secretpass
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  
+  flyway:
+    image: flyway/flyway
+    depends_on:
+      - postgres
+    command: 
+      - "migrate"
+      - "-baselineOnMigrate=true"
+    volumes:
+      - ./migrations:/flyway/sql
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/football_club
+      FLYWAY_USER: app
+      FLYWAY_PASSWORD: secretpass
+      FLYWAY_BASELINE_VERSION: 1
+      FLYWAY_BASELINE_DESCRIPTION: "Initial baseline"
+      FLYWAY_SCHEMAS: public 
+
+
+volumes:
+  pgdata:

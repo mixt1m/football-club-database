@@ -10,6 +10,17 @@
             "database": "postgres",
             "username": "postgres",
             "password": "01102006"
+        },
+        {
+            "ssh": "Disabled",
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 5433,
+            "driver": "PostgreSQL",
+            "name": "app",
+            "username": "app",
+            "database": "football_club",
+            "password": "secretpass"
         }
     ]
 }

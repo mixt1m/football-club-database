@@ -19,3 +19,4 @@ GRANT USAGE ON SCHEMA football_club TO viewer;
 GRANT SELECT ON ALL TABLES IN SCHEMA football_club TO viewer;
 
 
+SELECT * FROM football_club.players;

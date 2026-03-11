@@ -12,24 +12,65 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-  
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d football_club"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest  # ← quay.io!
+    container_name: postgres-exporter
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://app:secretpass@postgres:5432/football_club?sslmode=disable"  # ← postgres!
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    depends_on:
+      - postgres-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana1
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
   flyway:
     image: flyway/flyway
-    depends_on:
-      - postgres
-    command: 
-      - "migrate"
-      - "-baselineOnMigrate=true"
     volumes:
       - ./migrations:/flyway/sql
     environment:
       FLYWAY_URL: jdbc:postgresql://postgres:5432/football_club
       FLYWAY_USER: app
       FLYWAY_PASSWORD: secretpass
-      FLYWAY_BASELINE_VERSION: 1
-      FLYWAY_BASELINE_DESCRIPTION: "Initial baseline"
-      FLYWAY_SCHEMAS: public 
-
+    depends_on:
+      - postgres
 
 volumes:
   pgdata:
+  prometheus_data:
+  grafana_data:

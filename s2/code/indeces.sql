@@ -33,7 +33,11 @@ WHERE end_date IN ('2026-06-10', '2027-05-12');
 
 --4
 
-CREATE INDEX ON football_club.players (first_name);
+--varchar_pattern_ops
+
+CREATE INDEX ON football_club.players (first_name varchar_pattern_ops);
+
+DROP INDEX football_club.players_first_name_idx;
 
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT * FROM football_club.players

@@ -1,0 +1,93 @@
+services:
+  pg-primary:
+    image: postgres:16
+    container_name: pg-primary
+    hostname: pg-primary
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - hot_standby=on
+      - -c
+      - listen_addresses=*
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    ports:
+      - "5432:5432"
+    volumes:
+      - primary_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pgnet
+
+  pg-standby:
+    image: postgres:16
+    container_name: pg-standby
+    hostname: pg-standby
+    restart: unless-stopped
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PGPASSWORD: replpass
+    entrypoint: ["/bin/bash", "/scripts/standby-entrypoint.sh"]
+    depends_on:
+      pg-primary:
+        condition: service_healthy
+    ports:
+      - "5433:5432"
+    volumes:
+      - standby_data:/var/lib/postgresql/data
+      - ./scripts/standby-entrypoint.sh:/scripts/standby-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pgnet
+
+  pg-subscriber:
+    image: postgres:16
+    container_name: pg-subscriber
+    hostname: pg-subscriber
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb
+    ports:
+      - "5434:5432"
+    volumes:
+      - subscriber_data:/var/lib/postgresql/data
+      - ./scripts/02_subscriber_init.sql:/docker-entrypoint-initdb.d/02_subscriber_init.sql:ro
+      - ./scripts/setup-logical.sql:/scripts/setup-logical.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - pgnet
+
+volumes:
+  primary_data:
+  standby_data:
+  subscriber_data:
+
+networks:
+  pgnet:

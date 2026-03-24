@@ -5,609 +5,735 @@ from datetime import datetime, timedelta
 import numpy as np
 from faker import Faker
 import json
-from collections import defaultdict
+import os
 
-fake = Faker(['en_US', 'ru_RU', 'uk_UA'])  # Поддерживаем несколько локалей
+# Инициализация Faker
+fake = Faker(['en_US', 'en_GB', 'de_DE', 'fr_FR', 'es_ES'])
+Faker.seed(42)
+random.seed(42)
+np.random.seed(42)
 
-# Подключение к базе данных
-conn = psycopg2.connect(
-    dbname="football_club",
-    user="app",
-    password="secretpass",
-    port="5433",
-    host="localhost"
-)
-cur = conn.cursor()
+# Параметры подключения к БД
+DB_PARAMS = {
+    'dbname': 'football_club',
+    'user': 'app',
+    'password': 'secretpass',
+    'host': 'localhost',
+    'port': '5433'
+}
 
-# Словарь для хранения сгенерированных ID
-ids = defaultdict(list)
+# Увеличенные объемы данных
+TABLE_SIZES = {
+    'cities': 5000,
+    'owners': 3000,
+    'stadiums': 3000,
+    'league': 200,
+    'tournament': 150,
+    'departments': 30,
+    'positions': 500,
+    'football_clubs': 5000,
+    'fun_shop': 15000,
+    'players': 2_000_000,
+    'staff': 800_000,
+    'contracts': 1_800_000,
+    'sponsors': 400_000,
+    'participation': 700_000,
+    'products': 2_500_000,
+}
 
+total = sum(TABLE_SIZES.values())
+print(f"Total records to generate: {total:,}")
 
-def generate_zipf_distribution(n, alpha=1.5, size=None):
-    """Генерация Zipf-подобного распределения"""
-    if size is None:
-        size = n
-    # Используем распределение Ципфа для создания перекоса
-    ranks = np.arange(1, n + 1)
-    weights = ranks ** (-alpha)
-    weights /= weights.sum()
-    return np.random.choice(n, size=size, p=weights)
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
+def to_python_type(value):
+    """Преобразование numpy типов в стандартные Python типы"""
+    if value is None:
+        return None
+    elif isinstance(value, (np.integer, np.int64, np.int32)):
+        return int(value)
+    elif isinstance(value, (np.floating, np.float64, np.float32)):
+        return float(value)
+    elif isinstance(value, np.ndarray):
+        return value.tolist()
+    elif isinstance(value, np.bool_):
+        return bool(value)
+    elif isinstance(value, datetime):
+        return value
+    elif isinstance(value, date):
+        return value
+    else:
+        return value
 
-def generate_cities(n=100):
-    """Генерация городов (низкая кардинальность)"""
+def normalize_weights(weights):
+    """Нормализация весов, чтобы их сумма была равна 1"""
+    weights = np.array(weights, dtype=float)
+    total = weights.sum()
+    if total == 0 or np.isnan(total) or np.isinf(total):
+        return np.ones(len(weights)) / len(weights)
+    return weights / total
+
+def safe_choice(population, size=1, weights=None, replace=True):
+    """Безопасный выбор с проверкой размеров"""
+    if not population:
+        return None
+    
+    if size == 0:
+        return []
+    
+    if weights is not None:
+        weights = normalize_weights(weights)
+    
+    if not replace and size > len(population):
+        replace = True
+    
+    try:
+        result = np.random.choice(population, size=size, p=weights, replace=replace)
+        # Преобразуем результат в стандартный Python тип
+        if size == 1:
+            return to_python_type(result)
+        else:
+            return [to_python_type(x) for x in result]
+    except:
+        # В случае ошибки возвращаем случайный выбор с равномерным распределением
+        if size == 1:
+            return to_python_type(random.choice(population))
+        else:
+            return [to_python_type(random.choice(population)) for _ in range(size)]
+
+def power_law_distribution(min_val, max_val, size, alpha=2.5):
+    """Степенной закон с безопасной обработкой"""
+    if size == 0:
+        return []
+    try:
+        u = np.random.random(size)
+        result = min_val * (1 - u) ** (-1/(alpha-1))
+        result = np.clip(result, min_val, max_val)
+        # Преобразуем в список стандартных типов
+        return [to_python_type(x) for x in result]
+    except:
+        # В случае ошибки возвращаем равномерное распределение
+        return [to_python_type(random.uniform(min_val, max_val)) for _ in range(size)]
+
+# ========== ФУНКЦИИ ГЕНЕРАЦИИ ==========
+
+def generate_cities(n):
+    """Генерация городов"""
     cities = []
-    countries = ['Ukraine', 'Poland', 'Germany', 'Spain', 'Italy', 'France', 'England']
-
+    countries = ['USA', 'UK', 'Germany', 'France', 'Spain', 'Italy', 'Brazil', 
+                 'Argentina', 'Japan', 'China', 'Russia', 'Netherlands', 'Portugal']
+    
     for i in range(n):
-        name = fake.city()
-        country = random.choice(countries)
-        cities.append((name, country))
+        city = {
+            'name': fake.city(),
+            'country': random.choice(countries)
+        }
+        cities.append(city)
+    
+    return cities
 
-    insert_query = """
-        INSERT INTO football_club.cities (name, country) 
-        VALUES %s RETURNING city_id;
-    """
+def generate_owners(n):
+    """Генерация владельцев"""
+    owners = []
+    nationalities = ['USA', 'UK', 'Russia', 'China', 'Saudi Arabia', 'UAE', 'Qatar']
+    
+    for i in range(n):
+        owner = {
+            'name': fake.name(),
+            'nationality': random.choice(nationalities),
+            'purchase_date': fake.date_between(start_date='-30y', end_date='today')
+        }
+        owners.append(owner)
+    
+    return owners
 
-    ids['cities'] = []
-    for city in cities:
-        cur.execute(insert_query.replace('%s', '(%s, %s)'), city)
-        ids['cities'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['cities'])} cities")
-
-
-def generate_stadiums(n=100):
+def generate_stadiums(n):
     """Генерация стадионов"""
     stadiums = []
+    capacities = power_law_distribution(5000, 120000, n)
+    
     for i in range(n):
-        name = f"{fake.company()} Stadium"
-        capacity = random.choice([5000, 10000, 15000, 20000, 30000, 50000])
-        address = fake.address()
-        stadiums.append((name, capacity, address))
+        stadium = {
+            'name': f"{fake.company()} {random.choice(['Stadium', 'Arena', 'Park'])}",
+            'capacity': int(capacities[i]) if i < len(capacities) else 30000,
+            'address': fake.address().replace('\n', ', ').replace('\r', '')
+        }
+        stadiums.append(stadium)
+    
+    return stadiums
 
-    insert_query = """
-        INSERT INTO football_club.stadiums (name, capacity, address) 
-        VALUES %s RETURNING staduim_id;
-    """
-
-    ids['stadiums'] = []
-    for stadium in stadiums:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s)'), stadium)
-        ids['stadiums'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['stadiums'])} stadiums")
-
-
-def generate_owners(n=50):
-    """Генерация владельцев (меньше чем клубов - некоторые владеют несколькими)"""
-    owners = []
-    for i in range(n):
-        name = fake.name()
-        nationality = random.choice(['Ukrainian', 'British', 'American', 'Russian', 'German', 'French', 'Spanish'])
-        purchase_date = fake.date_between(start_date='-20y', end_date='today')
-        owners.append((name, nationality, purchase_date))
-
-    insert_query = """
-        INSERT INTO football_club.owners (name, nationality, purchase_date) 
-        VALUES %s RETURNING owner_id;
-    """
-
-    ids['owners'] = []
-    for owner in owners:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s)'), owner)
-        ids['owners'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['owners'])} owners")
-
-
-def generate_football_clubs(n=100):
-    """Генерация футбольных клубов"""
-    clubs = []
-    for i in range(n):
-        name = fake.company() + " FC"
-        country = random.choice(['Ukraine', 'Poland', 'Germany', 'Spain'])
-        city = fake.city()
-        owner_id = random.choice(ids['owners'])
-        stadium_id = random.choice(ids['stadiums'])
-        city_id = random.choice(ids['cities'])
-        clubs.append((name, country, city, owner_id, stadium_id, city_id))
-
-    insert_query = """
-        INSERT INTO football_club.football_clubs 
-        (name, country, city, owner_id, staduim_id, city_id) 
-        VALUES %s RETURNING club_id;
-    """
-
-    ids['football_clubs'] = []
-    for club in clubs:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s, %s, %s, %s)'), club)
-        ids['football_clubs'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['football_clubs'])} football clubs")
-
-
-def generate_league(n=10):
-    """Генерация лиг (низкая кардинальность)"""
+def generate_league(n):
+    """Генерация лиг"""
     leagues = []
-    leagues_data = [
-        ('Premier League', 'England', 1),
-        ('La Liga', 'Spain', 1),
-        ('Bundesliga', 'Germany', 1),
-        ('Serie A', 'Italy', 1),
-        ('Ligue 1', 'France', 1),
-        ('Ukrainian Premier League', 'Ukraine', 1),
-        ('Championship', 'England', 2),
-        ('Segunda Division', 'Spain', 2),
-        ('2. Bundesliga', 'Germany', 2),
-    ]
+    countries = ['England', 'Spain', 'Germany', 'Italy', 'France']
+    league_names = ['Premier League', 'La Liga', 'Bundesliga', 'Serie A', 'Ligue 1']
+    
+    for i in range(n):
+        league = {
+            'name': league_names[i % len(league_names)],
+            'country': countries[i % len(countries)],
+            'tier': (i % 3) + 1
+        }
+        leagues.append(league)
+    
+    return leagues
 
-    for name, country, tier in leagues_data[:n]:
-        leagues.append((name, country, tier))
-
-    insert_query = """
-        INSERT INTO football_club.league (name, country, tier) 
-        VALUES %s RETURNING liague_id;
-    """
-
-    ids['league'] = []
-    for league in leagues:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s)'), league)
-        ids['league'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['league'])} leagues")
-
-
-def generate_tournament(n=20):
+def generate_tournament(n):
     """Генерация турниров"""
     tournaments = []
-    tournament_data = [
-        ('Champions League', 'Europe', 'group+playoff'),
-        ('Europa League', 'Europe', 'group+playoff'),
-        ('Conference League', 'Europe', 'group+playoff'),
-        ('National Cup', 'National', 'playoff'),
-        ('Super Cup', 'National', 'single match'),
+    regions = ['Europe', 'South America', 'World', 'Domestic']
+    formats = ['Group + Knockout', 'Knockout', 'Round Robin']
+    tournament_names = [
+        'Champions League', 'Europa League', 'World Cup', 
+        'FA Cup', 'Copa del Rey', 'Copa Libertadores'
     ]
+    
+    for i in range(n):
+        tournament = {
+            'name': tournament_names[i % len(tournament_names)],
+            'region': regions[i % len(regions)],
+            'format': formats[i % len(formats)]
+        }
+        tournaments.append(tournament)
+    
+    return tournaments
 
-    for name, region, format_ in tournament_data:
-        tournaments.append((name, region, format_))
-
-    for i in range(n - len(tournaments)):
-        name = f"{fake.word().capitalize()} Cup"
-        region = random.choice(['Europe', 'Asia', 'Africa', 'America', 'National'])
-        format_ = random.choice(['group', 'playoff', 'group+playoff', 'single match'])
-        tournaments.append((name, region, format_))
-
-    insert_query = """
-        INSERT INTO football_club.tournament (name, region, format) 
-        VALUES %s RETURNING tournament_id;
-    """
-
-    ids['tournament'] = []
-    for tournament in tournaments:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s)'), tournament)
-        ids['tournament'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['tournament'])} tournaments")
-
-
-def generate_departments():
-    """Генерация департаментов (фиксированный набор)"""
-    departments = [
-        ('Coaching Staff',),
-        ('Medical Department',),
-        ('Scouting Department',),
-        ('Administration',),
-        ('Marketing',),
-        ('Youth Academy',),
-        ('Analytics Department',),
-        ('Physical Training',),
+def generate_departments(n):
+    """Генерация департаментов"""
+    department_names = [
+        'Coaching Staff', 'Medical', 'Scouting', 'Youth Academy',
+        'Marketing', 'Finance', 'Operations', 'Legal', 'Media'
     ]
+    departments = [{'name': name} for name in department_names[:min(n, len(department_names))]]
+    return departments
 
-    insert_query = """
-        INSERT INTO football_club.departments (name) 
-        VALUES %s RETURNING department_id;
-    """
-
-    ids['departments'] = []
-    for dept in departments:
-        cur.execute(insert_query.replace('%s', '(%s)'), dept)
-        ids['departments'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['departments'])} departments")
-
-
-def generate_positions():
-    """Генерация позиций сотрудников"""
-    positions_data = [
-        (ids['departments'][0], 'Head Coach', 50000),
-        (ids['departments'][0], 'Assistant Coach', 30000),
-        (ids['departments'][1], 'Team Doctor', 40000),
-        (ids['departments'][1], 'Physiotherapist', 25000),
-        (ids['departments'][2], 'Chief Scout', 35000),
-        (ids['departments'][2], 'Regional Scout', 20000),
-        (ids['departments'][3], 'General Manager', 45000),
-        (ids['departments'][3], 'Secretary', 15000),
-        (ids['departments'][4], 'Marketing Director', 40000),
-        (ids['departments'][4], 'Social Media Manager', 20000),
-    ]
-
+def generate_positions(n, departments):
+    """Генерация позиций"""
     positions = []
-    for dept_id, title, salary in positions_data:
-        positions.append((dept_id, title, salary))
+    if not departments:
+        return positions
+        
+    dept_ids = list(range(1, len(departments) + 1))
+    salaries = power_law_distribution(25000, 300000, n)
+    
+    for i in range(n):
+        position = {
+            'department_id': random.choice(dept_ids),
+            'title': fake.job(),
+            'base_salary': float(salaries[i]) if i < len(salaries) else 50000.0
+        }
+        positions.append(position)
+    
+    return positions
 
-    insert_query = """
-        INSERT INTO football_club.positions (department_id, title, base_salary) 
-        VALUES %s RETURNING position_id;
-    """
+def generate_football_clubs(n, cities, owners, stadiums):
+    """Генерация футбольных клубов"""
+    clubs = []
+    if not cities or not stadiums:
+        return clubs
+    
+    for i in range(n):
+        city = random.choice(cities)
+        
+        club = {
+            'name': f"{city['name']} {random.choice(['FC', 'United', 'City'])}",
+            'country': city['country'],
+            'city': city['name'],
+            'owner_id': random.randint(1, len(owners)) if owners and random.random() < 0.9 else None,
+            'staduim_id': random.randint(1, len(stadiums)) if stadiums else 1,
+            'city_id': i + 1  # временный ID
+        }
+        clubs.append(club)
+    
+    return clubs
 
-    ids['positions'] = []
-    for position in positions:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s::money)'), position)
-        ids['positions'].append(cur.fetchone()[0])
+def generate_players(n, clubs):
+    """Генерация игроков"""
+    players = []
+    if not clubs:
+        return players
+        
+    positions = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+    nationalities = ['England', 'Spain', 'Germany', 'France', 'Italy', 'Brazil', 'Argentina']
+    
+    market_values = power_law_distribution(50000, 200000000, n, alpha=2.2)
+    
+    for i in range(n):
+        try:
+            if random.random() < 0.10:
+                nationality = None
+            else:
+                nationality = random.choice(nationalities)
+                
+            if random.random() < 0.12:
+                position = None
+            else:
+                position = random.choice(positions)
+            
+            tags = []
+            if random.random() < 0.7:
+                possible_tags = ['captain', 'young', 'experienced', 'injury_prone', 
+                               'national', 'star', 'homegrown']
+                tags = random.sample(possible_tags, min(random.randint(1, 3), len(possible_tags)))
+            
+            player = {
+                'first_name': fake.first_name(),
+                'date_of_birth': fake.date_of_birth(minimum_age=16, maximum_age=40),
+                'nationality': nationality,
+                'position': position,
+                'market_value': float(market_values[i]) if i < len(market_values) else 100000.0,
+                'club_id': random.randint(1, len(clubs)) if random.random() < 0.92 else None,
+                'tags': tags
+            }
+            players.append(player)
+        except Exception as e:
+            print(f"Error generating player {i}: {e}")
+            continue
+        
+        if i % 500000 == 0 and i > 0:
+            print(f"  Generated {i:,} players")
+    
+    return players
 
-    print(f"Generated {len(ids['positions'])} positions")
-
-
-def generate_staff(n=100):
+def generate_staff(n, positions, clubs):
     """Генерация персонала"""
     staff_list = []
-    positions = ids['positions']
-    clubs = ids['football_clubs']
-
-    # Низкая кардинальность для позиций (некоторые позиции встречаются чаще)
-    position_weights = generate_zipf_distribution(len(positions), size=n)
-
+    if not clubs or not positions:
+        return staff_list
+    
+    salaries = power_law_distribution(20000, 800000, n, alpha=2.3)
+    
     for i in range(n):
-        first_name = fake.first_name()
-        date_of_birth = fake.date_of_birth(minimum_age=20, maximum_age=70)
-        salary = random.randint(1000, 50000)
-        position_id = positions[position_weights[i] % len(positions)]
-        club_id = random.choice(clubs) if random.random() > 0.1 else None  # 10% NULL
-        staff_list.append((first_name, date_of_birth, salary, position_id, club_id))
+        try:
+            staff = {
+                'first_name': fake.name(),
+                'date_of_birth': fake.date_of_birth(minimum_age=18, maximum_age=70),
+                'salary': float(salaries[i]) if i < len(salaries) else 50000.0,
+                'position_id': random.randint(1, len(positions)),
+                'club_id': random.randint(1, len(clubs)) if random.random() < 0.9 else None
+            }
+            staff_list.append(staff)
+        except Exception as e:
+            print(f"Error generating staff {i}: {e}")
+            continue
+        
+        if i % 200000 == 0 and i > 0:
+            print(f"  Generated {i:,} staff")
+    
+    return staff_list
 
-    insert_query = """
-        INSERT INTO football_club.staff 
-        (first_name, date_of_birth, salary, position_id, club_id) 
-        VALUES %s RETURNING staff_id;
-    """
-
-    ids['staff'] = []
-    for staff in staff_list:
-        cur.execute(insert_query.replace('%s', '(%s, %s, %s::money, %s, %s)'), staff)
-        ids['staff'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['staff'])} staff members")
-
-
-def generate_players(n=250000):  # Для 250k записей
-    """Генерация игроков с различными распределениями"""
-    players = []
-    positions = ['Goalkeeper', 'Right Back', 'Left Back', 'Center Back',
-                 'Defensive Midfielder', 'Central Midfielder', 'Attacking Midfielder',
-                 'Right Winger', 'Left Winger', 'Striker']
-
-    clubs = ids['football_clubs']
-
-    # Сильно неравномерное распределение клубов (70% игроков в 10% клубов)
-    top_clubs = clubs[:len(clubs) // 10]  # 10% топ клубов
-    other_clubs = clubs[len(clubs) // 10:]
-
-    # Zipf распределение для позиций
-    position_indices = generate_zipf_distribution(len(positions), alpha=1.2, size=n)
-
-    # Zipf распределение для клубов (перекос)
-    club_weights = []
-    if random.random() < 0.7:  # 70% игроков
-        club_weights = [random.choice(top_clubs) for _ in range(int(n * 0.7))]
-    else:
-        club_weights = [random.choice(other_clubs) for _ in range(int(n * 0.3))]
-
-    # Добиваем до n
-    while len(club_weights) < n:
-        club_weights.append(random.choice(other_clubs))
-    random.shuffle(club_weights)
-
-    # Высокая кардинальность для имен
-    # Диапазонные значения для возраста
-    # NULL для некоторых полей (5-20%)
-
-    for i in range(n):
-        first_name = fake.first_name()
-        date_of_birth = fake.date_of_birth(minimum_age=16, maximum_age=40)
-        nationality = random.choice(['Ukrainian', 'Brazilian', 'Argentine', 'Spanish',
-                                     'German', 'French', 'Italian', 'English'])
-
-        # NULL для позиции (10%)
-        position = positions[position_indices[i]] if random.random() > 0.1 else None
-
-        # Рыночная стоимость с Zipf распределением
-        market_value_base = int(np.random.zipf(1.5)) * 100000
-        market_value = min(market_value_base, 100000000)  # Ограничиваем 100M
-
-        club_id = club_weights[i] if random.random() > 0.05 else None  # 5% NULL
-
-        players.append((first_name, date_of_birth, nationality, position,
-                        market_value, club_id))
-
-    # Вставка батчами для производительности
-    batch_size = 10000
-    ids['players'] = []
-
-    for i in range(0, len(players), batch_size):
-        batch = players[i:i + batch_size]
-        values = []
-        for p in batch:
-            if p[4] is not None:
-                values.append((p[0], p[1], p[2], p[3], f"{p[4]}", p[5]))
-            else:
-                values.append((p[0], p[1], p[2], p[3], None, p[5]))
-
-        insert_query = """
-            INSERT INTO football_club.players 
-            (first_name, date_of_birth, nationality, position, market_value, club_id) 
-            VALUES %s RETURNING player_id;
-        """
-
-        # Используем execute_values для батч-вставки
-        with conn.cursor() as batch_cur:
-            execute_values(
-                batch_cur,
-                "INSERT INTO football_club.players (first_name, date_of_birth, nationality, position, market_value, club_id) VALUES %s RETURNING player_id",
-                [tuple(x) for x in values],
-                page_size=batch_size
-            )
-            for row in batch_cur.fetchall():
-                ids['players'].append(row[0])
-
-        print(f"Generated {len(ids['players'])} players so far...")
-
-    print(f"Total generated {len(ids['players'])} players")
-
-
-def generate_contracts(n=250000):  # Контракты для игроков
+def generate_contracts(n, players):
     """Генерация контрактов"""
     contracts = []
-    players = ids['players']
-
-    # Разные сроки контрактов
-    for i, player_id in enumerate(players):
-        start_date = fake.date_between(start_date='-5y', end_date='today')
-        end_date = start_date + timedelta(days=random.choice([365, 730, 1095, 1460, 1825]))
-        # Зарплата с перекосом
-        salary_base = int(np.random.zipf(1.5)) * 10000
-        salary = min(salary_base, 500000)
-        contracts.append((player_id, start_date, end_date, salary))
-
-    batch_size = 10000
-    for i in range(0, len(contracts), batch_size):
-        batch = contracts[i:i + batch_size]
-        values = [(p_id, s_date, e_date, f"{salary}") for p_id, s_date, e_date, salary in batch]
-
-        with conn.cursor() as batch_cur:
-            execute_values(
-                batch_cur,
-                "INSERT INTO football_club.contracts (player_id, start_date, end_date, salary) VALUES %s",
-                [tuple(x) for x in values],
-                page_size=batch_size
-            )
-
-        print(f"Generated {min(i + batch_size, len(contracts))} contracts...")
-
-
-def generate_participation(n=300000):
-    """Генерация участия в турнирах"""
-    participations = []
-    clubs = ids['football_clubs']
-    tournaments = ids['tournament']
-    leagues = ids['league']
-
-    seasons = [f"{year}/{year + 1}" for year in range(2015, 2024)]
-
-    # Zipf распределение для позиций в турнире
+    if not players:
+        return contracts
+    
+    salaries = power_law_distribution(50000, 40000000, n, alpha=2.3)
+    
     for i in range(n):
-        club_id = random.choice(clubs)
-        # 70% участия в лигах, 30% в турнирах
-        if random.random() < 0.7:
-            tournament_id = None
-            liague_id = random.choice(leagues)
-        else:
-            tournament_id = random.choice(tournaments)
-            liague_id = None
+        try:
+            contract_length = random.choices([1, 2, 3, 4, 5], weights=[0.1, 0.2, 0.35, 0.25, 0.1])[0]
+            start_date = fake.date_between(start_date='-8y', end_date='today')
+            end_date = start_date + timedelta(days=365 * contract_length)
+            
+            attributes = {}
+            if random.random() < 0.6:
+                attributes = {
+                    'agent': fake.name() if random.random() < 0.7 else None,
+                    'bonus_type': random.choice(['goals', 'appearances', 'trophies']),
+                    'release_clause': bool(random.choice([True, False])),
+                    'renewal': random.choice(['club', 'player']) if random.random() < 0.3 else None
+                }
+            
+            contract = {
+                'player_id': random.randint(1, len(players)),
+                'start_date': start_date,
+                'end_date': end_date,
+                'salary': float(salaries[i]) if i < len(salaries) else 100000.0,
+                'attributes': json.dumps(attributes) if attributes else '{}'
+            }
+            contracts.append(contract)
+        except Exception as e:
+            print(f"Error generating contract {i}: {e}")
+            continue
+        
+        if i % 500000 == 0 and i > 0:
+            print(f"  Generated {i:,} contracts")
+    
+    return contracts
 
-        season = random.choice(seasons)
-        # Позиция с перекосом (больше команд в середине таблицы)
-        final_position = int(np.random.normal(10, 5))
-        final_position = max(1, min(20, final_position))  # Ограничиваем
-
-        participations.append((club_id, tournament_id, liague_id, season, final_position))
-
-    batch_size = 10000
-    for i in range(0, len(participations), batch_size):
-        batch = participations[i:i + batch_size]
-
-        with conn.cursor() as batch_cur:
-            execute_values(
-                batch_cur,
-                "INSERT INTO football_club.participation (club_id, tournament_id, liague_id, season, final_position) VALUES %s",
-                [tuple(x) for x in batch],
-                page_size=batch_size
-            )
-
-        print(f"Generated {min(i + batch_size, len(participations))} participations...")
-
-
-def generate_fun_shops(n=50):
-    """Генерация магазинов"""
-    shops = []
-    clubs = ids['football_clubs']
-
-    # Не у всех клубов есть магазины
-    clubs_with_shops = random.sample(clubs, min(n, len(clubs)))
-
-    for club_id in clubs_with_shops:
-        address = fake.address()
-        shops.append((address, club_id))
-
-    insert_query = """
-        INSERT INTO football_club.fun_shop (address, club_id) 
-        VALUES %s RETURNING shop_id;
-    """
-
-    ids['fun_shop'] = []
-    for shop in shops:
-        cur.execute(insert_query.replace('%s', '(%s, %s)'), shop)
-        ids['fun_shop'].append(cur.fetchone()[0])
-
-    print(f"Generated {len(ids['fun_shop'])} fun shops")
-
-
-def generate_products(n=1000):
-    """Генерация товаров с JSONB и массивами"""
-    products = []
-    shops = ids['fun_shop']
-
-    product_types = ['Jersey', 'Scarf', 'Cap', 'Mug', 'Poster', 'Keychain',
-                     'Jacket', 'T-shirt', 'Souvenir', 'Flag']
-
-    # Размеры для разных товаров
-    sizes = ['S', 'M', 'L', 'XL', 'XXL']
-
-    for i in range(n):
-        name = fake.word().capitalize() + " " + random.choice(product_types)
-        product_type = random.choice(product_types)
-        price = random.randint(10, 200)
-
-        # Перекос в количестве (некоторые товары очень популярны)
-        if random.random() < 0.3:  # Популярные товары
-            count = random.randint(100, 1000)
-        else:
-            count = random.randint(1, 100)
-
-        shop_id = random.choice(shops) if random.random() > 0.1 else None
-
-        # Геометрические размеры
-        height = random.randint(10, 100) if product_type in ['Poster', 'Flag'] else random.randint(5, 30)
-        width = random.randint(10, 100) if product_type in ['Poster', 'Flag'] else random.randint(5, 30)
-        length = random.randint(1, 10) if product_type in ['Keychain', 'Mug'] else random.randint(10, 50)
-
-        # JSONB с дополнительной информацией
-        attributes = json.dumps({
-            'color': fake.color_name(),
-            'material': random.choice(['Cotton', 'Polyester', 'Wool', 'Plastic', 'Ceramic']),
-            'sizes_available': random.sample(sizes, random.randint(1, len(sizes))) if random.random() > 0.5 else [],
-            'is_limited': random.choice([True, False]),
-            'season': random.choice(['Summer', 'Winter', 'All Season']),
-            'tags': fake.words(nb=random.randint(1, 5))
-        })
-
-        # Полнотекстовые данные в названии и описании
-        # Используем JSONB поле для хранения дополнительной информации
-
-        products.append((name, product_type, price, count, shop_id,
-                         height, width, length, attributes))
-
-    batch_size = 100
-    for i in range(0, len(products), batch_size):
-        batch = products[i:i + batch_size]
-        values = [(name, ptype, f"{price}", cnt, shop, h, w, l, attr)
-                  for name, ptype, price, cnt, shop, h, w, l, attr in batch]
-
-        with conn.cursor() as batch_cur:
-            execute_values(
-                batch_cur,
-                "INSERT INTO football_club.products (name, type, price, count, shop_id, height, width, length, attributes) VALUES %s",
-                [tuple(x) for x in values],
-                page_size=batch_size
-            )
-
-        print(f"Generated {min(i + batch_size, len(products))} products...")
-
-
-def generate_sponsors(n=200):
+def generate_sponsors(n, clubs):
     """Генерация спонсоров"""
     sponsors = []
-    clubs = ids['football_clubs']
-
-    sponsor_types = ['Main Sponsor', 'Technical Sponsor', 'Official Partner',
-                     'Broadcasting Partner', 'Commercial Partner']
-
-    # Перекос: у топ-клубов больше спонсоров
+    if not clubs:
+        return sponsors
+        
+    types = ['Kit', 'Shirt', 'Sleeve', 'Partner', 'Stadium']
+    amounts = power_law_distribution(100000, 50000000, n, alpha=2.1)
+    
     for i in range(n):
-        if random.random() < 0.4:  # 40% спонсоров уходят топ-клубам
-            club_id = random.choice(clubs[:len(clubs) // 5])
-        else:
-            club_id = random.choice(clubs)
+        try:
+            details = {}
+            if random.random() < 0.5:
+                details = {
+                    'industry': random.choice(['Sportswear', 'Airlines', 'Banking', 'Tech']),
+                    'global': bool(random.random() < 0.3)
+                }
+            
+            sponsor = {
+                'club_id': random.randint(1, len(clubs)),
+                'start_date': fake.date_between(start_date='-10y', end_date='-1y'),
+                'end_date': fake.date_between(start_date='today', end_date='+5y'),
+                'amount': float(amounts[i]) if i < len(amounts) else 1000000.0,
+                'type': random.choice(types),
+                'details': json.dumps(details) if details else '{}'
+            }
+            sponsors.append(sponsor)
+        except Exception as e:
+            print(f"Error generating sponsor {i}: {e}")
+            continue
+    
+    return sponsors
 
-        start_date = fake.date_between(start_date='-5y', end_date='today')
-        end_date = start_date + timedelta(days=random.choice([365, 730]))
-        amount = random.randint(100000, 10000000)
-        sponsor_type = random.choice(sponsor_types)
+def generate_participation(n, clubs, league, tournament):
+    """Генерация участия в соревнованиях"""
+    participations = []
+    if not clubs:
+        return participations
+        
+    seasons = [f"{y}-{y+1}" for y in range(2015, 2025)]
+    
+    for i in range(n):
+        try:
+            if random.random() < 0.7:
+                final_pos = int(power_law_distribution(1, 20, 1, alpha=1.8)[0])
+                participation = {
+                    'club_id': random.randint(1, len(clubs)),
+                    'tournament_id': None,
+                    'liague_id': random.randint(1, len(league)) if league else None,
+                    'season': random.choice(seasons),
+                    'final_position': final_pos
+                }
+            else:
+                final_pos = int(power_law_distribution(1, 32, 1, alpha=1.8)[0])
+                participation = {
+                    'club_id': random.randint(1, len(clubs)),
+                    'tournament_id': random.randint(1, len(tournament)) if tournament else None,
+                    'liague_id': None,
+                    'season': random.choice(seasons),
+                    'final_position': final_pos
+                }
+            participations.append(participation)
+        except Exception as e:
+            print(f"Error generating participation {i}: {e}")
+            continue
+    
+    return participations
 
-        sponsors.append((club_id, start_date, end_date, amount, sponsor_type))
+def generate_fun_shop(n, clubs):
+    """Генерация магазинов"""
+    shops = []
+    if not clubs:
+        return shops
+    
+    for i in range(n):
+        try:
+            shop = {
+                'address': fake.address().replace('\n', ', ').replace('\r', ''),
+                'club_id': random.randint(1, len(clubs))
+            }
+            shops.append(shop)
+        except Exception as e:
+            print(f"Error generating shop {i}: {e}")
+            continue
+    
+    return shops
 
-    batch_size = 100
-    for i in range(0, len(sponsors), batch_size):
-        batch = sponsors[i:i + batch_size]
-        values = [(club, s_date, e_date, f"{amount}", stype)
-                  for club, s_date, e_date, amount, stype in batch]
+def generate_products(n, shops):
+    """Генерация продуктов"""
+    products = []
+    if not shops:
+        return products
+        
+    types = ['Jersey', 'Scarf', 'Cap', 'Mug', 'Poster', 'Keychain']
+    colors = ['Red', 'Blue', 'White', 'Black', 'Green']
+    prices = power_law_distribution(5, 300, n, alpha=2.2)
+    
+    for i in range(n):
+        try:
+            attributes = {}
+            if random.random() < 0.5:
+                attributes = {
+                    'color': random.choice(colors),
+                    'size': random.choice(['S', 'M', 'L', 'XL']) if random.random() < 0.7 else None
+                }
+            
+            tags = []
+            if random.random() < 0.6:
+                possible_tags = ['new', 'sale', 'popular']
+                tags = random.sample(possible_tags, min(random.randint(1, 2), len(possible_tags)))
+            
+            height = random.randint(10, 200) if random.random() < 0.8 else None
+            width = random.randint(10, 200) if random.random() < 0.8 else None
+            length = random.randint(10, 200) if random.random() < 0.8 else None
+            
+            product = {
+                'name': f"{fake.word().title()} {random.choice(types)}",
+                'type': random.choice(types),
+                'price': float(prices[i]) if i < len(prices) else 50.0,
+                'count': random.randint(1, 1000),
+                'shop_id': random.randint(1, len(shops)),
+                'height': height,
+                'width': width,
+                'length': length,
+                'attributes': json.dumps(attributes) if attributes else None,
+                'tags': tags
+            }
+            products.append(product)
+        except Exception as e:
+            print(f"Error generating product {i}: {e}")
+            continue
+        
+        if i % 500000 == 0 and i > 0:
+            print(f"  Generated {i:,} products")
+    
+    return products
 
-        with conn.cursor() as batch_cur:
-            execute_values(
-                batch_cur,
-                "INSERT INTO football_club.sponsors (club_id, start_date, end_date, amount, type) VALUES %s",
-                [tuple(x) for x in values],
-                page_size=batch_size
-            )
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С БД ==========
 
-        print(f"Generated {min(i + batch_size, len(sponsors))} sponsors...")
+def test_connection():
+    """Тестирование подключения к БД"""
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        print("✓ Database connection successful")
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"✗ Database connection failed: {e}")
+        return False
 
+def prepare_value_for_db(val):
+    """Подготовка значения для вставки в БД"""
+    if val is None:
+        return None
+    elif isinstance(val, (list, dict)):
+        return json.dumps(val)
+    elif isinstance(val, (datetime, date)):
+        return val
+    elif isinstance(val, bool):
+        return val
+    elif isinstance(val, (int, float, str)):
+        return val
+    else:
+        return str(val)
+
+def insert_data(conn, table_name, data, columns):
+    """Вставка данных в таблицу"""
+    if not data:
+        print(f"  No data to insert for {table_name}")
+        return []
+        
+    cursor = conn.cursor()
+    
+    # Подготавливаем значения
+    values = []
+    for row in data:
+        row_values = []
+        for col in columns:
+            val = row.get(col)
+            row_values.append(prepare_value_for_db(val))
+        values.append(tuple(row_values))
+    
+    # Формируем запрос
+    query = f"INSERT INTO football_club.{table_name} ({', '.join(columns)}) VALUES %s"
+    
+    # Добавляем RETURNING если нужно получить ID
+    if table_name in ['cities', 'owners', 'stadiums', 'league', 'tournament', 
+                      'departments', 'football_clubs', 'positions', 'fun_shop', 'players']:
+        id_column = table_name[:-1] + '_id' if table_name.endswith('s') else table_name + '_id'
+        query += f" RETURNING {id_column}"
+        fetch = True
+    else:
+        fetch = False
+    
+    batch_size = 50000
+    all_ids = []
+    
+    total_batches = (len(values) + batch_size - 1) // batch_size
+    for i in range(0, len(values), batch_size):
+        batch = values[i:i+batch_size]
+        try:
+            if fetch:
+                result = execute_values(cursor, query, batch, fetch=True)
+                conn.commit()
+                for row in result:
+                    all_ids.append(row[0])
+            else:
+                execute_values(cursor, query, batch)
+                conn.commit()
+            
+            print(f"  Inserted batch {i//batch_size + 1}/{total_batches} into {table_name}")
+        except Exception as e:
+            print(f"  Error inserting batch {i//batch_size + 1} into {table_name}: {e}")
+            print(f"  Sample data: {batch[0] if batch else 'None'}")
+            conn.rollback()
+            raise
+    
+    print(f"  Completed: {len(data):,} records into {table_name}")
+    return all_ids
 
 def main():
     """Основная функция"""
+    print("="*50)
+    print("GENERATING DATA FOR FOOTBALL CLUB DATABASE")
+    print("="*50)
+    print(f"Total target: {total:,} records\n")
+
+    # Тестируем подключение
+    if not test_connection():
+        print("\nPlease check your database connection parameters in DB_PARAMS")
+        return
+    
     try:
-        # Сначала генерируем небольшие таблицы
-        generate_cities(50)  # Города
-        generate_stadiums(30)  # Стадионы
-        generate_owners(25)  # Владельцы
-
-        generate_football_clubs(30)  # Клубы
-
-        generate_league(10)  # Лиги
-        generate_tournament(15)  # Турниры
-
-        generate_departments()  # Департаменты
-        generate_positions()  # Позиции
-
-        generate_staff(200)  # Персонал
-
-        generate_fun_shops(20)  # Магазины
-
-        generate_products(1000)  # Товары
-
-        generate_sponsors(150)  # Спонсоры
-
-        # Большие таблицы
-        print("\n=== Генерация больших таблиц ===")
-        generate_players(300000)  # 300k игроков
-        conn.commit()
-
-        generate_contracts(300000)  # Контракты для игроков
-        conn.commit()
-
-        generate_participation(400000)  # 400k записей участия
-        conn.commit()
-
-        print("\nВсе данные успешно сгенерированы!")
-
+        conn = psycopg2.connect(**DB_PARAMS)
+    except Exception as e:
+        print(f"Failed to connect to database: {e}")
+        return
+    
+    try:
+        # Генерация всех данных
+        print("\n1. Generating cities...")
+        cities = generate_cities(TABLE_SIZES['cities'])
+        print(f"   Generated {len(cities)} cities")
+        
+        print("2. Generating owners...")
+        owners = generate_owners(TABLE_SIZES['owners'])
+        print(f"   Generated {len(owners)} owners")
+        
+        print("3. Generating stadiums...")
+        stadiums = generate_stadiums(TABLE_SIZES['stadiums'])
+        print(f"   Generated {len(stadiums)} stadiums")
+        
+        print("4. Generating league...")
+        league = generate_league(TABLE_SIZES['league'])
+        print(f"   Generated {len(league)} leagues")
+        
+        print("5. Generating tournament...")
+        tournament = generate_tournament(TABLE_SIZES['tournament'])
+        print(f"   Generated {len(tournament)} tournaments")
+        
+        print("6. Generating departments...")
+        departments = generate_departments(TABLE_SIZES['departments'])
+        print(f"   Generated {len(departments)} departments")
+        
+        print("7. Generating positions...")
+        positions = generate_positions(TABLE_SIZES['positions'], departments)
+        print(f"   Generated {len(positions)} positions")
+        
+        print("8. Generating football clubs...")
+        clubs = generate_football_clubs(TABLE_SIZES['football_clubs'], cities, owners, stadiums)
+        print(f"   Generated {len(clubs)} clubs")
+        
+        print("9. Generating fun shops...")
+        fun_shops = generate_fun_shop(TABLE_SIZES['fun_shop'], clubs)
+        print(f"   Generated {len(fun_shops)} shops")
+        
+        print("10. Generating players (large table)...")
+        players = generate_players(TABLE_SIZES['players'], clubs)
+        print(f"   Generated {len(players):,} players")
+        
+        print("11. Generating staff...")
+        staff = generate_staff(TABLE_SIZES['staff'], positions, clubs)
+        print(f"   Generated {len(staff):,} staff")
+        
+        print("12. Generating contracts (large table)...")
+        contracts = generate_contracts(TABLE_SIZES['contracts'], players)
+        print(f"   Generated {len(contracts):,} contracts")
+        
+        print("13. Generating sponsors...")
+        sponsors = generate_sponsors(TABLE_SIZES['sponsors'], clubs)
+        print(f"   Generated {len(sponsors):,} sponsors")
+        
+        print("14. Generating participation...")
+        participation = generate_participation(TABLE_SIZES['participation'], clubs, league, tournament)
+        print(f"   Generated {len(participation):,} participations")
+        
+        print("15. Generating products (largest table)...")
+        products = generate_products(TABLE_SIZES['products'], fun_shops)
+        print(f"   Generated {len(products):,} products")
+        
+        # Вставка данных
+        print("\n" + "="*50)
+        print("INSERTING DATA INTO DATABASE")
+        print("="*50)
+        
+        # Сначала таблицы без внешних ключей
+        city_ids = insert_data(conn, 'cities', cities, ['name', 'country'])
+        for i, city in enumerate(cities):
+            city['city_id'] = city_ids[i] if i < len(city_ids) else i + 1
+        
+        owner_ids = insert_data(conn, 'owners', owners, ['name', 'nationality', 'purchase_date'])
+        for i, owner in enumerate(owners):
+            owner['owner_id'] = owner_ids[i] if i < len(owner_ids) else i + 1
+        
+        stadium_ids = insert_data(conn, 'stadiums', stadiums, ['name', 'capacity', 'address'])
+        for i, stadium in enumerate(stadiums):
+            stadium['staduim_id'] = stadium_ids[i] if i < len(stadium_ids) else i + 1
+        
+        league_ids = insert_data(conn, 'league', league, ['name', 'country', 'tier'])
+        for i, l in enumerate(league):
+            l['liague_id'] = league_ids[i] if i < len(league_ids) else i + 1
+        
+        tournament_ids = insert_data(conn, 'tournament', tournament, ['name', 'region', 'format'])
+        for i, t in enumerate(tournament):
+            t['tournament_id'] = tournament_ids[i] if i < len(tournament_ids) else i + 1
+        
+        dept_ids = insert_data(conn, 'departments', departments, ['name'])
+        for i, dept in enumerate(departments):
+            dept['department_id'] = dept_ids[i] if i < len(dept_ids) else i + 1
+        
+        # Таблицы с внешними ключами
+        club_ids = insert_data(conn, 'football_clubs', clubs, ['name', 'country', 'city', 'owner_id', 'staduim_id', 'city_id'])
+        for i, club in enumerate(clubs):
+            club['club_id'] = club_ids[i] if i < len(club_ids) else i + 1
+        
+        position_ids = insert_data(conn, 'positions', positions, ['department_id', 'title', 'base_salary'])
+        for i, pos in enumerate(positions):
+            pos['position_id'] = position_ids[i] if i < len(position_ids) else i + 1
+        
+        shop_ids = insert_data(conn, 'fun_shop', fun_shops, ['address', 'club_id'])
+        for i, shop in enumerate(fun_shops):
+            shop['shop_id'] = shop_ids[i] if i < len(shop_ids) else i + 1
+        
+        # Основные большие таблицы
+        player_ids = insert_data(conn, 'players', players, ['first_name', 'date_of_birth', 'nationality', 'position', 'market_value', 'club_id', 'tags'])
+        for i, player in enumerate(players):
+            player['player_id'] = player_ids[i] if i < len(player_ids) else i + 1
+        
+        insert_data(conn, 'staff', staff, ['first_name', 'date_of_birth', 'salary', 'position_id', 'club_id'])
+        insert_data(conn, 'contracts', contracts, ['player_id', 'start_date', 'end_date', 'salary', 'attributes'])
+        insert_data(conn, 'sponsors', sponsors, ['club_id', 'start_date', 'end_date', 'amount', 'type', 'details'])
+        insert_data(conn, 'participation', participation, ['club_id', 'tournament_id', 'liague_id', 'season', 'final_position'])
+        insert_data(conn, 'products', products, ['name', 'type', 'price', 'count', 'shop_id', 'height', 'width', 'length', 'attributes', 'tags'])
+        
+        print("\n" + "="*50)
+        print("ALL DATA INSERTED SUCCESSFULLY!")
+        print("="*50)
+        
+        # Статистика
+        print("\nFINAL STATISTICS:")
+        print(f"Total records: {total:,}")
+        print("\nTable sizes:")
+        for table, size in TABLE_SIZES.items():
+            print(f"  {table:15s}: {size:10,d} records")
+        
     except Exception as e:
         conn.rollback()
-        print(f"Ошибка: {e}")
-        raise
+        print(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        cur.close()
         conn.close()
-
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pageinspect;
 SELECT pg_relation_filepath('football_club.cities');
 
 DELETE FROM football_club.cities
-WHERE name IN ('MVCC City', 'Deadlock City 1', 'Deadlock City 2');
+WHERE name IN ('City', 'City1', 'City 2');
 
 INSERT INTO football_club.cities (name, country)
 VALUES ('MVCC City', 'MVCC Country');

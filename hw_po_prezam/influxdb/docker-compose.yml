@@ -1,0 +1,26 @@
+services:
+  influxdb:
+    image: influxdb:3-core
+    container_name: influxdb_hw
+    command:
+      - influxdb3
+      - serve
+      - --node-id=node0
+      - --object-store=file
+      - --data-dir=/var/lib/influxdb3/data
+    ports:
+      - "8181:8181"
+    volumes:
+      - influxdb3_data:/var/lib/influxdb3/data
+
+  explorer:
+    image: influxdata/influxdb3-ui:1.7.0
+    container_name: influxdb3_explorer_hw
+    command: ["--mode=admin"]
+    ports:
+      - "8888:80"
+    depends_on:
+      - influxdb
+
+volumes:
+  influxdb3_data:
